@@ -4,13 +4,13 @@ import torch.nn.functional as F
 import torchvision.transforms as T
 import torchvision.models as models
 from torchvision.models.resnet import ResNet, resnet50
-from simCLRloader import get_dataloader
+from custom_dataset import get_dataloader
 import matplotlib.pyplot as plt
 import os
 import numpy as np
 import torchvision.transforms as T
 from torch.utils.data import DataLoader
-from custom_dataset import CustomImagePairDataset,CustomImageTrainDataset
+# from custom_dataset import CustomImagePairDataset,CustomImageTrainDataset
 
 def visual_iou(thresholds, ious_list, auc):
     plt.xlim(0, 1)
@@ -51,26 +51,18 @@ def visual_iou(thresholds, ious_list, auc):
 def contrastive_loss(z1, z2, temperature=0.5):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     batch_size = z1.shape[0]
-    
     z1 = F.normalize(z1, dim=1)
     z2 = F.normalize(z2, dim=1)
-
     representations = torch.cat([z1, z2], dim=0)
     similarity_matrix = F.cosine_similarity(representations.unsqueeze(1), representations.unsqueeze(0), dim=2)
-
     l_pos = torch.diag(similarity_matrix, batch_size)
     r_pos = torch.diag(similarity_matrix, -batch_size)
     positives = torch.cat([l_pos, r_pos]).view(2 * batch_size, 1)
-
     negatives = similarity_matrix[~torch.eye(2 * batch_size, dtype=bool)].view(2 * batch_size, -1)
-
     logits = torch.cat([positives, negatives], dim=1)
     logits /= temperature
-
     labels = torch.zeros(2 * batch_size).to(device).long()
-
     loss = nn.CrossEntropyLoss()(logits, labels)
-
     return loss
 
 class SimCLRModel(nn.Module):
@@ -111,10 +103,11 @@ training_folder_path = "datasets/realworld/training/images"
 testing_folder_path = "datasets/realworld/testing/images"
 train_label_folder = "datasets/realworld/training/training_csv.csv"
 test_label_folder = "datasets/realworld/testing/testing_csv.csv"
-batch_size = 2
-train_loader = get_dataloader(training_folder_path,train_label_folder, batch_size,True,"train")
-test_loader = get_dataloader(testing_folder_path,test_label_folder, batch_size,False,"test")
-epochs = 10
+batch_size = 4
+# train_loader = get_dataloader(training_folder_path,train_label_folder, batch_size,True,"test")
+test_loader = get_dataloader(testing_folder_path,test_label_folder, batch_size,"test")
+train_loader = get_dataloader(training_folder_path,train_label_folder,batch_size,"train")
+epochs = 1
 optimizer = torch.optim.Adam(simclr_model.parameters(), lr=0.001)
 scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=len(train_loader)*epochs)
 
@@ -123,8 +116,8 @@ for epoch in range(epochs):
     simclr_model.train()  # Set the model to training mode
     total_loss = 0.0
     for batch in train_loader:
-        img1, img1_aug = batch
-        proj_z1, proj_z2 = simclr_model(img1, img1_aug)
+        original_image,augmented_image = batch
+        proj_z1, proj_z2 = simclr_model(original_image,augmented_image)
         # Compute the contrastive loss between the projections
         loss = contrastive_loss(proj_z1, proj_z2)
         total_loss += loss.item()
@@ -142,7 +135,7 @@ for epoch in range(epochs):
 simclr_model.eval()  # Set the model to evaluation mode
 total_loss = 0.0
 total_batches = len(test_loader)
-thresholds = [i / 100 for i in range(0, 101, 5)]
+thresholds = [i / 100 for i in range(0, 101, 50)]
 ious_list = []
 true_positives = 0
 false_positives = 0
@@ -150,7 +143,7 @@ false_negatives = 0
 max_similarity = 0.0
 with torch.no_grad():  # No need to calculate gradients during testing
     for batch_idx,batch in enumerate(test_loader):
-        img1,img2,label= batch
+        img1,img2,label,image_1,image_2= batch
         proj_z1, proj_z2 = simclr_model(img1, img2)
 
         similarities = torch.matmul(F.normalize(proj_z1, dim=1), F.normalize(proj_z2, dim=1).t())
@@ -166,9 +159,17 @@ for threshold_percent in thresholds:
     false_positives = 0
     false_negatives = 0
     threshold = float(max_similarity * threshold_percent)
+    print("Current threshold is:",threshold)
     with torch.no_grad():  # No need to calculate gradients during testing
         for batch_idx, batch in enumerate(test_loader):
+            img1,img2,label,image_1,image_2= batch
+            proj_z1, proj_z2 = simclr_model(img1, img2)
+            similarities = torch.matmul(F.normalize(proj_z1, dim=1), F.normalize(proj_z2, dim=1).t())
             binary_predictions = (similarities >= threshold).float()
+            print("Current image1 is:",image_1)
+            print("Current image2 is:",image_2)
+            print("Current prediction is:",binary_predictions)
+            print("Current label is:",label)
             print("similarity is:",similarities)
             true_positives += ((binary_predictions == 1) & (label == 1)).sum().item()
             false_positives += ((binary_predictions == 1) & (label == 0)).sum().item()
