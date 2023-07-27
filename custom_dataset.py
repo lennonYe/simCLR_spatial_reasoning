@@ -5,6 +5,7 @@ from torchvision import transforms
 import pandas as pd
 from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt
+#dataset for running testing
 class CustomImagePairDataset(Dataset):
     def __init__(self, root_folder,label_dir):
         self.root_folder = root_folder
@@ -34,7 +35,7 @@ class CustomImagePairDataset(Dataset):
         img2 = self.normalize(img2)
         return img1, img2, label , image_1, image_2
     
-
+#dataset for running training
 class SimCLRDataset(Dataset):
     def __init__(self, root_dir):
         self.root_dir = root_dir
