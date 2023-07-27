@@ -3,14 +3,14 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torchvision.transforms as T
 import torchvision.models as models
-from torchvision.models.resnet import ResNet, resnet50
+from torchvision.models.resnet import ResNet, resnet50,resnet18
 from custom_dataset import get_dataloader
 import matplotlib.pyplot as plt
 import os
 import numpy as np
 import torchvision.transforms as T
 from torch.utils.data import DataLoader
-# from custom_dataset import CustomImagePairDataset,CustomImageTrainDataset
+from info_nce import InfoNCE
 
 def visual_iou(thresholds, ious_list, auc):
     plt.xlim(0, 1)
@@ -32,38 +32,36 @@ def visual_iou(thresholds, ious_list, auc):
     plt.close()
 
 
-# def contrastive_loss(z1, z2, temperature=0.1):
-#     # Compute the cosine similarity between z1 and z2
-#     z1 = F.normalize(z1, dim=1)
-#     z2 = F.normalize(z2, dim=1)
-#     similarities = torch.matmul(z1, z2.t()) / temperature
-    
-#     # Compute the logits for the contrastive loss
-#     batch_size = z1.size(0)
-#     labels = torch.arange(0, batch_size, device=z1.device)
-#     #labels = torch.cat([labels, labels], dim=0)  # Duplicate the labels for positive and negative pairs
-#     logits = similarities
-    
-#     # Use the InfoNCE loss
-#     criterion = nn.CrossEntropyLoss()
-#     loss = criterion(logits, labels)
-#     return loss
 def contrastive_loss(z1, z2, temperature=0.5):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     batch_size = z1.shape[0]
-    z1 = F.normalize(z1, dim=1)
-    z2 = F.normalize(z2, dim=1)
-    representations = torch.cat([z1, z2], dim=0)
-    similarity_matrix = F.cosine_similarity(representations.unsqueeze(1), representations.unsqueeze(0), dim=2)
-    l_pos = torch.diag(similarity_matrix, batch_size)
-    r_pos = torch.diag(similarity_matrix, -batch_size)
-    positives = torch.cat([l_pos, r_pos]).view(2 * batch_size, 1)
-    negatives = similarity_matrix[~torch.eye(2 * batch_size, dtype=bool)].view(2 * batch_size, -1)
-    logits = torch.cat([positives, negatives], dim=1)
-    logits /= temperature
-    labels = torch.zeros(2 * batch_size).to(device).long()
-    loss = nn.CrossEntropyLoss()(logits, labels)
-    return loss
+    embedding_size = 128
+    query = z2
+    positive_key = z1
+    negative_keys = []
+    num_negatives = 2 * (batch_size - 1)  # Number of negative examples for each query image
+    negative_keys = torch.empty(batch_size, num_negatives, embedding_size, device=device)
+    for i in range(batch_size):
+        index = 0
+        for j in range(batch_size):
+            if i != j:
+                # Concatenate the negative keys for each query image
+                # print("Shape of z1",z1[j].shape)
+                # print("Shape of z2 is:",z2[j].shape)
+                # Concatenate the negative keys for each query image
+                negative_keys[i,index] = z1[j]
+                index += 1
+                negative_keys[i,index] = z2[j]
+                index += 1 
+    # print("positive key is:",positive_key)
+    # print("negative key is:",negative_keys)
+    # print("query is",query)
+
+    loss = InfoNCE(temperature=temperature, reduction='mean', negative_mode='paired')
+    output = loss(query, positive_key, negative_keys)
+    print(output)
+    return output
+    
 
 class SimCLRModel(nn.Module):
     def __init__(self, base_encoder, projection_dim=128):
@@ -94,7 +92,7 @@ class SimCLRModel(nn.Module):
         return proj_z1, proj_z2
 
 # Load the base encoder
-base_encoder = resnet50(weights="IMAGENET1K_V1")
+base_encoder = resnet18(pretrained=True) 
 # Modify the base encoder to remove the final classification layer
 base_encoder = nn.Sequential(*list(base_encoder.children())[:-1])
 # Create the SimCLR model with the modified base encoder
@@ -107,7 +105,7 @@ batch_size = 4
 # train_loader = get_dataloader(training_folder_path,train_label_folder, batch_size,True,"test")
 test_loader = get_dataloader(testing_folder_path,test_label_folder, batch_size,"test")
 train_loader = get_dataloader(training_folder_path,train_label_folder,batch_size,"train")
-epochs = 1
+epochs = 3
 optimizer = torch.optim.Adam(simclr_model.parameters(), lr=0.001)
 scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=len(train_loader)*epochs)
 
@@ -135,25 +133,19 @@ for epoch in range(epochs):
 simclr_model.eval()  # Set the model to evaluation mode
 total_loss = 0.0
 total_batches = len(test_loader)
-thresholds = [i / 100 for i in range(0, 101, 50)]
+thresholds = [i / 100 for i in range(0, 101, 25)]
 ious_list = []
 true_positives = 0
 false_positives = 0
 false_negatives = 0
-max_similarity = 0.0
-with torch.no_grad():  # No need to calculate gradients during testing
-    for batch_idx,batch in enumerate(test_loader):
-        img1,img2,label,image_1,image_2= batch
-        proj_z1, proj_z2 = simclr_model(img1, img2)
+max_similarity = 1.0
+# with torch.no_grad():  # No need to calculate gradients during testing
+#     for batch_idx,batch in enumerate(test_loader):
+#         img1,img2,label,image_1,image_2= batch
+#         proj_z1, proj_z2 = simclr_model(img1, img2)
 
-        similarities = torch.matmul(F.normalize(proj_z1, dim=1), F.normalize(proj_z2, dim=1).t())
-        max_similarity = max(max_similarity, similarities.max().item())
-        # Compute the contrastive loss between the projections
-        loss = contrastive_loss(proj_z1, proj_z2)
-        total_loss += loss.item()
-        # Print progress
-        print(f"Testing: [{batch_idx+1}/{total_batches}], Loss: {loss.item():.4f}")
-
+#         similarities = torch.matmul(F.normalize(proj_z1, dim=1), F.normalize(proj_z2, dim=1).t())
+#         max_similarity = max(max_similarity, similarities.max().item())
 for threshold_percent in thresholds:
     true_positives = 0
     false_positives = 0
@@ -164,7 +156,9 @@ for threshold_percent in thresholds:
         for batch_idx, batch in enumerate(test_loader):
             img1,img2,label,image_1,image_2= batch
             proj_z1, proj_z2 = simclr_model(img1, img2)
-            similarities = torch.matmul(F.normalize(proj_z1, dim=1), F.normalize(proj_z2, dim=1).t())
+            proj_z1_normalized = F.normalize(proj_z1, dim=1)
+            proj_z2_normalized = F.normalize(proj_z2, dim=1)
+            similarities = F.cosine_similarity(proj_z1_normalized.unsqueeze(1), proj_z2_normalized.unsqueeze(0), dim=2)
             binary_predictions = (similarities >= threshold).float()
             print("Current image1 is:",image_1)
             print("Current image2 is:",image_2)
