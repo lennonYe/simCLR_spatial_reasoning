@@ -32,12 +32,12 @@ def visual_iou(thresholds, ious_list, auc):
     plt.close()
 
 
-def contrastive_loss(z1, z2, temperature=0.5):
+def contrastive_loss(z1, z2, temperature=0.75):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     batch_size = z1.shape[0]
     embedding_size = 128
-    query = z2
-    positive_key = z1
+    query = z1
+    positive_key = z2
     negative_keys = []
     num_negatives = 2 * (batch_size - 1)  # Number of negative examples for each query image
     negative_keys = torch.empty(batch_size, num_negatives, embedding_size, device=device)
@@ -69,9 +69,11 @@ class SimCLRModel(nn.Module):
         self.base_encoder = base_encoder
         num_features = self.get_num_features()
         self.projection_head = nn.Sequential(
+            nn.Linear(num_features, num_features),
+            nn.BatchNorm1d(num_features),
+            nn.ReLU(),
             nn.Linear(num_features, projection_dim),
-            nn.ReLU(inplace=True),
-            nn.Linear(projection_dim, projection_dim)
+            nn.BatchNorm1d(projection_dim)
         )
     def get_num_features(self):
         with torch.no_grad():
@@ -101,12 +103,12 @@ training_folder_path = "datasets/realworld/training/images"
 testing_folder_path = "datasets/realworld/testing/images"
 train_label_folder = "datasets/realworld/training/training_csv.csv"
 test_label_folder = "datasets/realworld/testing/testing_csv.csv"
-batch_size = 4
+batch_size = 16
 # train_loader = get_dataloader(training_folder_path,train_label_folder, batch_size,True,"test")
 test_loader = get_dataloader(testing_folder_path,test_label_folder, batch_size,"test")
 train_loader = get_dataloader(training_folder_path,train_label_folder,batch_size,"train")
-epochs = 3
-optimizer = torch.optim.Adam(simclr_model.parameters(), lr=0.001)
+epochs = 10
+optimizer = torch.optim.Adam(simclr_model.parameters(), lr=0.002)
 scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=len(train_loader)*epochs)
 
 # Training loop
@@ -114,7 +116,7 @@ for epoch in range(epochs):
     simclr_model.train()  # Set the model to training mode
     total_loss = 0.0
     for batch in train_loader:
-        original_image,augmented_image = batch
+        augmented_image,original_image = batch
         proj_z1, proj_z2 = simclr_model(original_image,augmented_image)
         # Compute the contrastive loss between the projections
         loss = contrastive_loss(proj_z1, proj_z2)
