@@ -60,8 +60,9 @@ class SimCLRDataset(Dataset):
     def __len__(self):
         return len(self.image_paths)
     def __getitem__(self, idx):
-        image_name = os.path.join(self.root_dir, self.image_paths[idx])
-        image = Image.open(image_name).convert("RGB")
+        image_name = self.image_paths[idx]
+        image_path = os.path.join(self.root_dir, image_name)
+        image = Image.open(image_path).convert("RGB")
         augmented_image = self.augmented(image)
         original_image = self.normalize(image)
         # plt.figure()
@@ -76,7 +77,7 @@ class SimCLRDataset(Dataset):
         # plt.title("Original Image")
         # plt.axis('off')
         # plt.show()
-        return augmented_image,original_image
+        return augmented_image,original_image, image_name
     
 
 def get_dataloader(folder_path,label_dir,batch_size,type):
